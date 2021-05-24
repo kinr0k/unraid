@@ -11,8 +11,6 @@ import voluptuous as vol
 from homeassistant import config_entries
 from homeassistant.const import ATTR_NAME, CONF_HOST, CONF_API_KEY
 from homeassistant.helpers.aiohttp_client import async_get_clientsession
-from homeassistant.helpers.device_registry import format_mac
-from homeassistant.helpers.typing import ConfigType, DiscoveryInfoType
 
 from .const import DOMAIN  # pylint:disable=unused-import
 
