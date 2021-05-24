@@ -1,81 +1,71 @@
 """Adds config flow for unRAID."""
-from collections import OrderedDict
+from __future__ import annotations
 
+import asyncio
+import logging
+
+from aiohttp.client_exceptions import ClientConnectorError
+import async_timeout
 import voluptuous as vol
-# from sampleclient.client import Client
+
 from homeassistant import config_entries
+from homeassistant.const import ATTR_NAME, CONF_HOST, CONF_API_KEY
+from homeassistant.helpers.aiohttp_client import async_get_clientsession
+from homeassistant.helpers.device_registry import format_mac
+from homeassistant.helpers.typing import ConfigType, DiscoveryInfoType
 
-from .const import DOMAIN
+from .const import DOMAIN  # pylint:disable=unused-import
 
+_LOGGER = logging.getLogger(__name__)
 
-@config_entries.HANDLERS.register(DOMAIN)
-class unRAIDFlowHandler(config_entries.ConfigFlow):
+class unRAIDFlowHandler(config_entries.ConfigFlow, domain=DOMAIN):
     """Config flow for unRAID."""
 
     VERSION = 1
     CONNECTION_CLASS = config_entries.CONN_CLASS_LOCAL_POLL
 
     def __init__(self):
-        """Initialize."""
+        """Initialize flow."""
         self._errors = {}
 
-    async def async_step_user(
-        self, user_input={}
-    ):  # pylint: disable=dangerous-default-value
+    async def async_step_user(self, user_input: ConfigType | None = None):
         """Handle a flow initialized by the user."""
-        self._errors = {}
-
-        if self._async_current_entries():
-            return self.async_abort(reason="single_instance_allowed")
-
-        if self.hass.data.get(DOMAIN):
-            return self.async_abort(reason="single_instance_allowed")
+        errors = {}
 
         if user_input is not None:
-            # valid = await self._test_credentials(
-            #     user_input["host"], user_input["api_key"]
-            # )
-            valid = True
-            if valid:
-                return self.async_create_entry(title="unRAID", data=user_input)
+            self._host = user_input[CONF_HOST]
+            self._api_key = user_input[CONF_API_KEY]
+            try:
+                mac = await self.test_credentials(self._host, self._api_key)
+            except (ApiError, ClientConnectorError, asyncio.TimeoutError):
+                errors["base"] = "cannot_connect"
+            except CannotGetMac:
+                return self.async_abort(reason="device_unsupported")
+            except Exception:  # pylint: disable=broad-except
+                _LOGGER.exception("Unexpected exception")
+                errors["base"] = "unknown"
             else:
-                self._errors["base"] = "auth"
+                await self.async_set_unique_id(format_mac(mac))
+                self._abort_if_unique_id_configured({CONF_HOST: self._host})
 
-            return await self._show_config_form(user_input)
+                return self.async_create_entry(
+                    title=self._host,
+                    data=user_input,
+                )
 
-        return await self._show_config_form(user_input)
-
-    async def _show_config_form(self, user_input):
-        """Show the configuration form to edit location data."""
-
-        # Defaults
-        host = ""
-        api_key = ""
-
-        if user_input is not None:
-            if "host" in user_input:
-                host = user_input["host"]
-            if "api_key" in user_input:
-                api_key = user_input["api_key"]
-
-        data_schema = OrderedDict()
-        data_schema[vol.Required("host", default=host)] = str
-        data_schema[vol.Required("api_key", default=api_key)] = str
         return self.async_show_form(
-            step_id="user", data_schema=vol.Schema(data_schema), errors=self._errors
+            step_id="user",
+            data_schema=vol.Schema(
+                {
+                    vol.Required(CONF_HOST, default=""): str,
+                    vol.Required(CONF_API_KEY, default=""): str,
+                }
+            ),
+            errors=errors,
         )
 
-    async def async_step_import(self, user_input):  # pylint: disable=unused-argument
-        """Import a config entry.
-        Special type of import, we're not actually going to store any data.
-        Instead, we're going to rely on the values that are in config file.
-        """
-        if self._async_current_entries():
-            return self.async_abort(reason="single_instance_allowed")
 
-        return self.async_create_entry(title="configuration.yaml", data={})
-
-    async def _test_credentials(self, host, api_key):
+    async def test_credentials(self, host, api_key):
         """Return true if credentials is valid."""
         try:
             client = UnraidClient(host, api_key)
